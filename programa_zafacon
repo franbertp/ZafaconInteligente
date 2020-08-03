@@ -1,0 +1,378 @@
+#include <Adafruit_NeoPixel.h>
+#ifdef __AVR__
+#include <avr/power.h> // Required for 16 MHz Adafruit Trinket
+#endif
+
+Adafruit_NeoPixel pixels(NUMPIXELS, LED, NEO_GRB + NEO_KHZ800);
+#define DELAYVAL 50 // Time (in milliseconds) to pause between pixels
+
+#include <Ultrasonic.h>
+#include "HX711.h"
+
+#define SENSOR_PUERTA_ARRIBA 2
+#define SENSOR_PUERTA_ABAJO 3
+#define SENSOR_HUMO 4
+#define PD_SCK 5
+#define DOUT 6
+#define SIG 7
+#define CW_MOTOR 8
+#define CCW_MOTOR 9
+#define LED 10
+#define FIN_DE_CARRERA_CONTRAIDO 11
+#define FIN_DE_CARRERA_RETRAIDO 12
+#define CURRENT_SENSE 0 
+#define NUMPIXELS 6 // Cantidad de LEDs
+
+void funciona_tijera (int nivel, bool humo, bool puerta1, bool puerta2, bool fin_carrera1, bool fin_carrera2, int peso, float corriente);
+void interru_tijera (void);
+long sensor_ultrasonico (void);
+int CW,CCW;
+
+HX711 bascula;
+float factor_calibracion = 36000.0; //Este valor del factor de calibración funciona para mi
+int pesaje;
+int peso_con=0;
+
+Ultrasonic ultrasonic(SIG);
+int distance;
+float mot1_voltage;
+int nivel_con=0,u=0;
+
+unsigned long previousMillis = 0;        
+const long interval = 1000;  //Se envia la información cada 1000ms
+
+//Variables de control interno
+bool HUMO ;
+bool PA ;
+bool PB ;
+bool FIN1 ;
+bool FIN2 ;
+int mot1_ADC;
+void setup() {
+  Serial.begin(9600);
+  // put your setup code here, to run once:
+  pinMode(SENSOR_PUERTA_ARRIBA, INPUT);
+  pinMode(SENSOR_PUERTA_ABAJO, INPUT);
+  pinMode(SENSOR_HUMO, INPUT);
+  pinMode(CW_MOTOR, OUTPUT);
+  pinMode(CCW_MOTOR, OUTPUT);
+  pinMode(LED, OUTPUT);
+  pinMode(FIN_DE_CARRERA_CONTRAIDO, INPUT);
+  pinMode(FIN_DE_CARRERA_RETRAIDO, INPUT);
+  //pinMode(CURRENT_SENSE, INPUT_PULLUP);
+#if defined(__AVR_ATtiny85__) && (F_CPU == 16000000)
+  clock_prescale_set(clock_div_1);
+#endif
+
+  pixels.begin(); // INITIALIZE NeoPixel strip object (REQUIRED)
+  pixels.clear(); // Set all pixel colors to 'off'
+  int color;
+
+  bascula.begin(DOUT, PD_SCK);
+
+  // Aplicar la calibración
+  bascula.set_scale();
+  // Iniciar la tara
+  // No tiene que haber nada sobre el peso
+  bascula.tare();
+  attachInterrupt(SENSOR_PUERTA_ARRIBA, LEDPuerta, RISING);
+  attachInterrupt(SENSOR_PUERTA_ARRIBA, interru_tijera, RISING);
+  attachInterrupt(SENSOR_PUERTA_ABAJO,LEDPuerta, RISING);
+  attachInterrupt(SENSOR_PUERTA_ABAJO,interru_tijera, RISING);
+  //attachInterrupt(SENSOR_PUERTA_ARRIBA,sensor_ultrasonico(),RISING);
+  bascula.set_scale(factor_calibracion);
+}
+
+void loop() {
+  // put your main code here, to run repeatedly:
+  unsigned long currentMillis = millis();
+  mot1_ADC = analogRead(CURRENT_SENSE);
+  HUMO = digitalRead(SENSOR_HUMO);
+  PA =  digitalRead(SENSOR_PUERTA_ARRIBA);
+  PB =  digitalRead(SENSOR_PUERTA_ABAJO);
+  FIN1 = digitalRead(FIN_DE_CARRERA_CONTRAIDO);
+  FIN2 = digitalRead(FIN_DE_CARRERA_RETRAIDO);
+
+  mot1_voltage= mot1_ADC * (5.0 / 1024);
+  Serial.println(mot1_voltage);
+  //Serial.println(mot1_ADC);
+  distance = sensor_ultrasonico();
+  pesaje = bascula.get_units();
+  //Serial.println(nivel_con);
+  //Serial.println(peso_con);
+  LEDNivel();     //De acuerdo al nivel configura los LEDs
+  LEDPeso();      //De acuerdo al peso configura los LEDs
+  LEDPuerta();    //De acuerdo a los sensores de puertas configura los LEDs
+  LEDFire();      //De acuerdo al humo configura los LEDs
+  LEDcomprimir();  //De acuerdo al motor se configura los LEDs
+  //LEDemergencia ();//animacion en caso de que ocurra una emergencia 
+  //interru_tijera();
+  funciona_tijera(distance,HUMO,PA,PB,FIN1,FIN2,pesaje,mot1_voltage);
+
+  if (currentMillis - previousMillis >= interval) {
+    previousMillis = currentMillis;
+    //Todo lo que esté aquí dentro, se repite cada "interval" ms.
+    //Envio por el monitor Serial cada valor medido, seguido de un "!",
+    Serial.print(pesaje);
+    Serial.print("!");
+    Serial.print(distance);
+    Serial.print("!");
+    Serial.print(HUMO);
+    Serial.print("!");
+    Serial.print(PA||PB);
+    Serial.print("!");
+    Serial.print(FIN1);
+    Serial.print("!");
+    Serial.print(FIN2);
+    Serial.print("!");
+    Serial.println(" "); //Al final envio un " " para definir el final de los datos enviados.
+
+    
+  }
+}
+
+void LEDNivel() {
+  if (distance < 33) {
+    //pixels.clear(); // Set all pixel colors to 'off'
+    led(1, 0);
+    delay(DELAYVAL);
+  }
+  if (distance >= 33 && distance <= 66) {
+    //pixels.clear(); // Set all pixel colors to 'off'
+    led(2, 0);
+    delay(DELAYVAL);
+  }
+  if (distance > 66) {
+    //pixels.clear(); // Set all pixel colors to 'off'
+    led(0, 0);
+    delay(DELAYVAL);
+  }
+}
+
+void LEDPeso() {
+  if (pesaje < 15) {
+    //pixels.clear(); // Set all pixel colors to 'off'
+    led(0, 5);
+    delay(DELAYVAL);
+  }
+  if (pesaje  >= 15 && pesaje  <= 30) {
+    //pixels.clear(); // Set all pixel colors to 'off'
+    led(2, 5);
+    delay(DELAYVAL);
+  }
+  if (pesaje  > 30) {
+    //pixels.clear(); // Set all pixel colors to 'off'
+    led(1, 5);
+    delay(DELAYVAL);
+  }
+}
+
+void LEDPuerta() {
+  if (PA || PB) {
+    //pixels.clear(); // Set all pixel colors to 'off'
+    led(1, 2);
+    delay(DELAYVAL);
+  }
+  else{
+    led(0, 2);
+    delay(DELAYVAL);
+  }
+
+}
+
+void LEDFire() {
+  if (HUMO) {
+    //pixels.clear(); // Set all pixel colors to 'off'
+    //led(1, 4);
+    //delay(DELAYVAL);
+    for (int i=0;i<=6;i++ )
+    {
+    led (1, i);
+    delay(DELAYVAL);}
+    
+  }
+  else{
+    led(0, 4);
+    delay(DELAYVAL);
+  }
+
+}
+
+void LEDcomprimir()
+{
+  if (CW==1||CCW==1)
+  {
+    led(1, 1);
+    delay(DELAYVAL);
+    }
+  else{
+    led(0, 1);
+    delay(DELAYVAL);}
+ }
+
+int dly=0,t=0;
+void funciona_tijera (int nivel, bool humo, bool puerta1, bool puerta2, bool fin_carrera1, bool fin_carrera2, int peso, float corriente)
+{ 
+  //Serial.println(u);
+  //Serial.println(CCW);
+  if (digitalRead(CCW_MOTOR)==0 && digitalRead(CW_MOTOR)==0&&u==0)
+  {
+    CW=0;
+    CCW=0;
+    }
+    if (puerta1 == 1 || puerta2 == 1)
+    {u=1;}
+  if (nivel > 30 && nivel < 40 && puerta1 == 0 && puerta2 == 0 && fin_carrera1 == 1 && peso < 50 && humo == 0 &&  peso > (peso_con*1.5)) //pregunto si el nivel de basura esta a tope
+  {
+    CW=1;
+    CCW=0;
+  }
+
+  else
+  {
+    if ( (fin_carrera2 == 1 || corriente > 2.5) && peso > (peso_con*0.5))
+    {
+      CW=0;
+      CCW=1;
+    }
+    
+    else {
+        digitalWrite(CCW_MOTOR, LOW);
+        digitalWrite(CW_MOTOR, LOW);
+        if ((fin_carrera2 == 1 || corriente > 2.5) && puerta1 == 0 && puerta2 == 0 && t==1)
+        {
+          CW=0;
+          CCW=1;}
+    }
+  }
+
+  if ((fin_carrera2 == 0 || corriente > 2.5) && CW==1&& puerta1 == 0 && puerta2 == 0 && humo==0)//hasta que la tiejra no llegue hasta bajo, no hay quien lo pare
+    {
+    digitalWrite(CCW_MOTOR, LOW);
+    digitalWrite(CW_MOTOR, HIGH);
+    //t=0;
+    /*IO0=0; //desactivo el CCW
+      IO4=1; //activo el CW
+      IO2=1; //habilito el driver*/
+    }
+
+    if (fin_carrera1 != 1 && CCW==1 && puerta1 == 0 && puerta2 == 0 && humo==0) //hasta que la tiejra no llegue hasta arriba, no hay quien lo pare
+      {
+       digitalWrite(CW_MOTOR, LOW);
+       digitalWrite(CCW_MOTOR, HIGH);
+       peso_con=peso;
+       nivel_con=nivel;
+       t=0;
+       u=0;
+        /*IO0=1; //activo el CCW
+          IO2=1; //habilito el driver
+          IO4=0; //desactivo el CW*/
+      }
+      
+  //Aqui se define lo que pasa cuando hay humo
+  
+  if (humo == 1)
+  {
+    t=1;
+    if (fin_carrera1 == 1||dly==10)
+    {CCW=0;
+      CW=1;
+      //dly=0;
+      }
+      else 
+      {
+          if (fin_carrera2 == 1)
+          {CCW=1;
+            CW=0;
+            //dly=0;
+            }
+
+              else 
+                {
+                  if (CW==0 && CCW==0)
+                    {
+                      CCW=0;
+                      CW=1;
+                     //dly=0;
+                      }
+                  }
+        }
+      
+      if (fin_carrera2 == 0 && CW==1)//hasta que la tiejra no llegue hasta bajo, no hay quien lo pare
+      {
+      digitalWrite(CCW_MOTOR, LOW);
+      digitalWrite(CW_MOTOR, HIGH);
+      dly=0;
+    /*IO0=0; //desactivo el CCW
+      IO4=1; //activo el CW
+      IO2=1; //habilito el driver*/
+      }
+      
+      
+      
+            if (CCW==1 && dly<10)
+            {
+            digitalWrite(CCW_MOTOR, HIGH);
+            digitalWrite(CW_MOTOR, LOW);
+            dly++;
+            dly;
+            }
+           
+        /*IO0=1; //activo el CCW
+          IO2=1; //habilito el driver
+          IO4=0; //desactivo el CW*/
+        
+  }
+
+}
+
+void interru_tijera (void)// funcion que se ejecuta cada vez que alguna de las puertas es abierta
+{ //impide que la tijera este funcionando cuando se de esta condificion
+  if ((PA == 1 || PB == 1))
+  {
+    digitalWrite(CCW_MOTOR, LOW);
+    digitalWrite(CW_MOTOR, LOW);
+  }
+  delay(1000);
+}
+
+/*float sensor_ultrasonico (void)
+  {
+  float duracion=0;
+  GPIO16=1; //activo el trigger del sensor ultrasonico
+  delay(1);
+  GPIO16=0; //desactivo el trigger del sensor ultrasonico
+  duracion = pulseIn(GPIO14, HIGH);//se mide el tiempo en que el sensor recive el eco
+  return duracion/58.2;
+  }*/
+
+long sensor_ultrasonico (void)
+{
+  return distance = ultrasonic.read();
+}
+
+int peso() {
+
+}
+
+void led (int color, int led)
+{
+  switch (color)
+  {
+    case 0://color verde
+      pixels.setPixelColor(led, pixels.Color(0, 255, 0));
+      pixels.show();   // Send the updated pixel colors to the hardware.
+      break;
+    case 1://color rojo
+      pixels.setPixelColor(led, pixels.Color(255, 0, 0));
+      pixels.show();   // Send the updated pixel colors to the hardware.
+      break;
+    case 2://color azul
+      pixels.setPixelColor(led, pixels.Color(0, 0, 255));
+      pixels.show();   // Send the updated pixel colors to the hardware.
+      break;
+
+    default:
+      pixels.setPixelColor(led, pixels.Color(0, 0, 0));
+  }
+}
